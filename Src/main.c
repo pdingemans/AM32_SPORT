@@ -226,7 +226,7 @@ an settings option)
 #include "peripherals.h"
 #include "phaseouts.h"
 #include "serial_telemetry.h"
-#include "kiss_telemetry.h"
+#include "sport_telemetry.h"
 #include "signal.h"
 #include "sounds.h"
 #include "targets.h"
