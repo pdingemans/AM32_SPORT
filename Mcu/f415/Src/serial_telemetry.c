@@ -7,46 +7,10 @@
 
 #include "serial_telemetry.h"
 #include "common.h"
-#include "sport_telemetry.h"
-
-// TX pin control for half-duplex operation
-void telem_TX_enable(void)
-{
-    // Set TX pin to output mode (drive)
-    gpio_init_type gpio_init_struct;
-    gpio_init_struct.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
-    gpio_init_struct.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
-    gpio_init_struct.gpio_mode = GPIO_MODE_MUX;
-    gpio_init_struct.gpio_pins = GPIO_PINS_6;
-    gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
-    gpio_init(GPIOB, &gpio_init_struct);
-    
-    usart_transmitter_enable(USART1, TRUE);
-}
-
-void telem_TX_disable(void)
-{
-    // Wait for transmission to complete
-    while (usart_flag_get(USART1, USART_TDC_FLAG) == RESET);
-    
-    usart_transmitter_enable(USART1, FALSE);
-    
-    // Set TX pin to tri-state (input/high-impedance)
-    gpio_init_type gpio_init_struct;
-    gpio_init_struct.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
-    gpio_init_struct.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
-    gpio_init_struct.gpio_mode = GPIO_MODE_INPUT;
-    gpio_init_struct.gpio_pins = GPIO_PINS_6;
-    gpio_init_struct.gpio_pull = GPIO_PULL_UP; // Weak pull-up to keep line high when tri-state
-    gpio_init(GPIOB, &gpio_init_struct);
-}
+#include "kiss_telemetry.h"
 
 void send_telem_DMA(uint8_t bytes)
-{ 
-    // Enable TX mode before transmission
-    telem_TX_enable();
-    
-    // Set data length and enable channel to start transfer
+{ // set data length and enable channel to start transfer
     DMA1_CHANNEL4->dtcnt = bytes;
     DMA1_CHANNEL4->ctrl_bit.chen = TRUE;
 }
@@ -59,13 +23,14 @@ void telem_UART_Init(void)
     crm_periph_clock_enable(CRM_GPIOB_PERIPH_CLOCK, TRUE);
     crm_periph_clock_enable(CRM_DMA1_PERIPH_CLOCK, TRUE);
 
-    /* Initially configure TX pin as input (tri-state) with pull-up */
+    /* configure the usart2 tx pin */
     gpio_init_struct.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
     gpio_init_struct.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
-    gpio_init_struct.gpio_mode = GPIO_MODE_INPUT;
+    gpio_init_struct.gpio_mode = GPIO_MODE_MUX;
     gpio_init_struct.gpio_pins = GPIO_PINS_6;
-    gpio_init_struct.gpio_pull = GPIO_PULL_UP; // Keep line high when tri-state
+    gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
     gpio_init(GPIOB, &gpio_init_struct);
+    // gpio_pin_mux_config(GPIOB, GPIO_PINS_SOURCE6, GPIO_MUX_0);
 
     dma_reset(DMA1_CHANNEL4);
     dma_flexible_config(DMA1,FLEX_CHANNEL4,DMA_FLEXIBLE_UART1_TX);
@@ -87,17 +52,13 @@ void telem_UART_Init(void)
     DMA1_CHANNEL4->ctrl |= DMA_DTERR_INT;
 
     /* configure usart1 param */
+
     gpio_pin_remap_config(USART1_MUX, TRUE);
     usart_init(USART1, 115200, USART_DATA_8BITS, USART_STOP_1_BIT);
-    usart_transmitter_enable(USART1, FALSE); // Start with TX disabled
+    usart_transmitter_enable(USART1, TRUE);
     usart_receiver_enable(USART1, TRUE);
     usart_single_line_halfduplex_select(USART1, TRUE);
     usart_dma_transmitter_enable(USART1, TRUE);
-    
-    // Enable USART RX interrupt for SPORT polling detection
-    usart_interrupt_enable(USART1, USART_RDBF_INT, TRUE);
-    nvic_irq_enable(USART1_IRQn, 2, 0);
-    
     usart_enable(USART1, TRUE);
 
     nvic_irq_enable(DMA1_Channel4_IRQn, 3, 0);

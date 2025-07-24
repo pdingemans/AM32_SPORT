@@ -226,7 +226,7 @@ an settings option)
 #include "peripherals.h"
 #include "phaseouts.h"
 #include "serial_telemetry.h"
-#include "sport_telemetry.h"
+#include "kiss_telemetry.h"
 #include "signal.h"
 #include "sounds.h"
 #include "targets.h"
@@ -402,8 +402,7 @@ uint16_t last_duty_cycle = 0;
 uint16_t duty_cycle_setpoint = 0;
 char play_tone_flag = 0;
 
-typedef enum { GPIO_PIN_RESET = 0U,
-    GPIO_PIN_SET } GPIO_PinState;
+// GPIO_PinState is already defined by STM32 HAL framework
 
 uint16_t startup_max_duty_cycle = 200;
 uint16_t minimum_duty_cycle = DEAD_TIME;

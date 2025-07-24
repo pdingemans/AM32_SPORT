@@ -15,16 +15,19 @@ SRC_BASE_DIR_$(MCU) := \
 	$(HAL_FOLDER_$(MCU))/Drivers/drivers/src
 
 SRC_DIR_$(MCU) := $(SRC_BASE_DIR_$(MCU)) \
-	$(HAL_FOLDER_$(MCU))/Src
+	$(HAL_FOLDER_$(MCU))/Src \
+	$(MAIN_SRC_DIR)/Sport/src
 
 CFLAGS_$(MCU) := \
 	-I$(HAL_FOLDER_$(MCU))/Inc \
 	-I$(HAL_FOLDER_$(MCU))/Drivers/drivers/inc \
 	-I$(HAL_FOLDER_$(MCU))/Drivers/CMSIS/cm4/core_support \
-	-I$(HAL_FOLDER_$(MCU))/Drivers/CMSIS/cm4/device_support
+	-I$(HAL_FOLDER_$(MCU))/Drivers/CMSIS/cm4/device_support \
+	-I$(MAIN_SRC_DIR)/Sport
 
 CFLAGS_$(MCU) += \
 	 -D$(PART) \
-	 -DUSE_STDPERIPH_DRIVER
+	 -DUSE_STDPERIPH_DRIVER \
+	 -DENABLE_FRSKY_SPORT_TELEMETRY
 
 SRC_$(MCU) := $(foreach dir,$(SRC_DIR_$(MCU)),$(wildcard $(dir)/*.[cs]))

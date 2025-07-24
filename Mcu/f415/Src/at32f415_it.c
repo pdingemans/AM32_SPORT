@@ -16,18 +16,12 @@ int recieved_ints = 0;
 /* Includes
  * ------------------------------------------------------------------*/
 #include "at32f415_it.h"
-#include <stdint.h>
-#include "serial_telemetry.h"
 
 #include "ADC.h"
 #include "main.h"
 #include "targets.h"
 #include "comparator.h"
 #include "common.h"
-
-extern void sport_handle_poll_request(uint8_t sensor_id);
-extern void sport_send_response(void);
-extern uint8_t sport_response_pending;
 /** @addtogroup AT32F421_StdPeriph_Templates
  * @{
  */
@@ -137,14 +131,10 @@ void DMA1_Channel4_IRQHandler(void)
     if (dma_flag_get(DMA1_FDT4_FLAG) == SET) {
         DMA1->clr = DMA1_GL4_FLAG;
         DMA1_CHANNEL4->ctrl_bit.chen = FALSE;
-        // Disable TX after transmission complete to put pin in tri-state
-        telem_TX_disable();
     }
     if (dma_flag_get(DMA1_DTERR2_FLAG) == SET) {
         DMA1->clr = DMA1_GL4_FLAG;
         DMA1_CHANNEL4->ctrl_bit.chen = FALSE;
-        // Also disable TX on error to put pin in tri-state
-        telem_TX_disable();
     }
 }
 
@@ -229,19 +219,8 @@ void TMR1_TRG_HALL_TMR11_IRQHandler(void)
 
 void TMR1_OVF_TMR10_IRQHandler(void)
 {
-    if (TMR10->ists & TMR_OVF_FLAG) {
-        TMR10->ists = (uint16_t)~TMR_OVF_FLAG;
-        
-        // Check if this is a SPORT response timer
-        if (sport_response_pending) {
-            sport_send_response();
-            sport_response_pending = 0;
-            TMR10->ctrl1_bit.tmren = FALSE; // Stop timer
-        }
-    }
-    if (TMR10->ists & TMR_C1_FLAG) {
-        TMR10->ists = (uint16_t)~TMR_C1_FLAG;
-    }
+    TMR10->ists = (uint16_t)~TMR_OVF_FLAG;
+    TMR10->ists = (uint16_t)~TMR_C1_FLAG;
 }
 
 /**
@@ -251,25 +230,7 @@ void TMR1_OVF_TMR10_IRQHandler(void)
 void USART1_IRQHandler(void)
 {
     /* USER CODE BEGIN USART1_IRQn 0 */
-    if (usart_flag_get(USART1, USART_RDBF_FLAG) == SET) {
-        uint8_t received_byte = usart_data_receive(USART1);
-        
-        // Check for SPORT polling frame (0x7E followed by sensor ID)
-        static uint8_t sport_state = 0;
-        
-        if (sport_state == 0 && received_byte == 0x7E) {
-            // Start frame detected
-            sport_state = 1;
-        } else if (sport_state == 1) {
-            // This is the sensor ID byte
-            if (received_byte == 0x00) { // Our sensor ID
-                sport_handle_poll_request(received_byte);
-            }
-            sport_state = 0;
-        } else {
-            sport_state = 0;
-        }
-    }
+
     /* USER CODE END USART1_IRQn 0 */
     /* USER CODE BEGIN USART1_IRQn 1 */
 
