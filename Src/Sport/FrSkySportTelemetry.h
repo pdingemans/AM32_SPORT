@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include "FrSkySportSensor.h"
 #include "FrSkySportSingleWireSerial.h"
+#include "../../../Mcu/f421/Inc/singlewire_sw_uart.h"
 
 #define FRSKY_TELEMETRY_MAX_SENSORS 10
 #define FRSKY_TELEMETRY_START_FRAME 0x7E
@@ -20,6 +21,7 @@
 typedef struct {
     FrSkySportSensor* sensors[FRSKY_TELEMETRY_MAX_SENSORS];
     FrSkySportSingleWireSerial serial;
+    sw_uart_config_t uart_config;
     uint8_t sensor_count;
     uint8_t prev_data;
 } FrSkySportTelemetry;

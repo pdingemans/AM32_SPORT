@@ -24,13 +24,9 @@ typedef struct {
     uint8_t inverted;               // 1 for inverted protocol, 0 for normal
     uint8_t idle_state;             // Idle state: 0=LOW, 1=HIGH
     
-    tmr_type* tx_timer;             // Timer for TX (e.g., TMR17)
-    IRQn_Type tx_timer_irq;         // TX timer IRQ
-    uint32_t tx_timer_clk;          // TX timer clock enable
-    
-    tmr_type* rx_timer;             // Timer for RX (e.g., TMR16)
-    IRQn_Type rx_timer_irq;         // RX timer IRQ
-    uint32_t rx_timer_clk;          // RX timer clock enable
+    tmr_type* timer;                // Timer for both TX and RX (e.g., TMR17)
+    IRQn_Type timer_irq;            // Timer IRQ
+    uint32_t timer_clk;             // Timer clock enable
 } sw_uart_config_t;
 
 // UART states
@@ -66,7 +62,6 @@ void sw_uart_set_tx_complete_callback(sw_uart_tx_complete_callback_t callback);
 
 // Interrupt handlers (to be called from MCU interrupt handlers)
 void sw_uart_exti_handler(void);
-void sw_uart_tx_timer_handler(void);
-void sw_uart_rx_timer_handler(void);
+void sw_uart_timer_handler(void);
 
 #endif // SINGLEWIRE_SW_UART_H

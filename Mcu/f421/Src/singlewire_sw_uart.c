@@ -5,9 +5,12 @@
 
 #include "singlewire_sw_uart.h"
 
+#ifdef ENABLE_FRSKY_SPORT_TELEMETRY
+
 // Static configuration and state
 static const sw_uart_config_t* sw_uart_config = NULL;
 static volatile sw_uart_rx_state_t sw_uart_rx_state = SW_UART_RX_IDLE;
+static volatile uint8_t sw_uart_tx_mode = 0;  // 0 = RX mode, 1 = TX mode
 
 // RX state variables
 static volatile uint8_t sw_uart_rx_buffer[32];
@@ -33,8 +36,7 @@ void sw_uart_init(const sw_uart_config_t* config)
     
     // Enable required clocks - generic GPIO clock enable is done by caller
     crm_periph_clock_enable(CRM_SCFG_PERIPH_CLOCK, TRUE);
-    crm_periph_clock_enable(config->tx_timer_clk, TRUE);
-    crm_periph_clock_enable(config->rx_timer_clk, TRUE);
+    crm_periph_clock_enable(config->timer_clk, TRUE);
     
     // Configure pin for reception
     sw_uart_enable_rx();
@@ -62,12 +64,10 @@ void sw_uart_deinit(void)
     
     // Disable interrupts
     nvic_irq_disable(sw_uart_config->exti_irq);
-    nvic_irq_disable(sw_uart_config->tx_timer_irq);
-    nvic_irq_disable(sw_uart_config->rx_timer_irq);
+    nvic_irq_disable(sw_uart_config->timer_irq);
     
-    // Stop timers
-    tmr_counter_enable(sw_uart_config->tx_timer, FALSE);
-    tmr_counter_enable(sw_uart_config->rx_timer, FALSE);
+    // Stop timer
+    tmr_counter_enable(sw_uart_config->timer, FALSE);
     
     sw_uart_config = NULL;
 }
@@ -97,9 +97,9 @@ void sw_uart_disable_rx(void)
 {
     if (!sw_uart_config) return;
     
-    // Stop RX timer
-    tmr_counter_enable(sw_uart_config->rx_timer, FALSE);
-    tmr_interrupt_enable(sw_uart_config->rx_timer, TMR_OVF_INT, FALSE);
+    // Stop timer
+    tmr_counter_enable(sw_uart_config->timer, FALSE);
+    tmr_interrupt_enable(sw_uart_config->timer, TMR_OVF_INT, FALSE);
     
     sw_uart_rx_state = SW_UART_RX_IDLE;
 }
@@ -130,11 +130,12 @@ void sw_uart_disable_tx(void)
 {
     if (!sw_uart_config) return;
     
-    // Stop TX timer
-    tmr_counter_enable(sw_uart_config->tx_timer, FALSE);
-    tmr_interrupt_enable(sw_uart_config->tx_timer, TMR_OVF_INT, FALSE);
+    // Stop timer
+    tmr_counter_enable(sw_uart_config->timer, FALSE);
+    tmr_interrupt_enable(sw_uart_config->timer, TMR_OVF_INT, FALSE);
     
     sw_uart_tx_active = 0;
+    sw_uart_tx_mode = 0;  // Switch back to RX mode
     
     // Return to RX mode
     sw_uart_enable_rx();
@@ -171,16 +172,17 @@ void sw_uart_send_byte(uint8_t data)
     // Start transmission
     sw_uart_tx_bit_count = 0;
     sw_uart_tx_active = 1;
+    sw_uart_tx_mode = 1;  // Switch to TX mode
     
-    // Configure and start TX timer
+    // Configure and start timer
     uint32_t timer_period = (120000000 / sw_uart_config->baud_rate) - 1;
-    tmr_base_init(sw_uart_config->tx_timer, timer_period, 0);
-    tmr_cnt_dir_set(sw_uart_config->tx_timer, TMR_COUNT_UP);
+    tmr_base_init(sw_uart_config->timer, timer_period, 0);
+    tmr_cnt_dir_set(sw_uart_config->timer, TMR_COUNT_UP);
     
-    tmr_interrupt_enable(sw_uart_config->tx_timer, TMR_OVF_INT, TRUE);
-    nvic_irq_enable(sw_uart_config->tx_timer_irq, 2, 0);
+    tmr_interrupt_enable(sw_uart_config->timer, TMR_OVF_INT, TRUE);
+    nvic_irq_enable(sw_uart_config->timer_irq, 2, 0);
     
-    tmr_counter_enable(sw_uart_config->tx_timer, TRUE);
+    tmr_counter_enable(sw_uart_config->timer, TRUE);
 }
 
 // Send a frame of bytes
@@ -245,119 +247,120 @@ void sw_uart_exti_handler(void)
     
     if (start_bit_detected) {
         sw_uart_rx_state = SW_UART_RX_START_BIT;
+        sw_uart_tx_mode = 0;  // Ensure we're in RX mode
         
         // Start bit sampling timer
         uint32_t timer_period = (120000000 / sw_uart_config->baud_rate) - 1;
-        tmr_base_init(sw_uart_config->rx_timer, timer_period, 0);
-        tmr_cnt_dir_set(sw_uart_config->rx_timer, TMR_COUNT_UP);
+        tmr_base_init(sw_uart_config->timer, timer_period, 0);
+        tmr_cnt_dir_set(sw_uart_config->timer, TMR_COUNT_UP);
         
-        tmr_interrupt_enable(sw_uart_config->rx_timer, TMR_OVF_INT, TRUE);
-        nvic_irq_enable(sw_uart_config->rx_timer_irq, 2, 0);
+        tmr_interrupt_enable(sw_uart_config->timer, TMR_OVF_INT, TRUE);
+        nvic_irq_enable(sw_uart_config->timer_irq, 2, 0);
         
-        tmr_counter_enable(sw_uart_config->rx_timer, TRUE);
+        tmr_counter_enable(sw_uart_config->timer, TRUE);
     }
 }
 
-// TX timer interrupt handler
-void sw_uart_tx_timer_handler(void)
+// Timer interrupt handler (handles both TX and RX)
+void sw_uart_timer_handler(void)
 {
     if (!sw_uart_config) return;
     
-    if (sw_uart_tx_bit_count < 10) {  // 1 start + 8 data + 1 stop = 10 bits
-        // Get current bit to transmit
-        uint8_t bit = (sw_uart_tx_data >> sw_uart_tx_bit_count) & 1;
-        
-        // Set pin state
-        if (bit) {
-            gpio_bits_set(sw_uart_config->gpio_port, sw_uart_config->gpio_pin);
+    if (sw_uart_tx_mode) {
+        // TX mode: handle transmission
+        if (sw_uart_tx_bit_count < 10) {  // 1 start + 8 data + 1 stop = 10 bits
+            // Get current bit to transmit
+            uint8_t bit = (sw_uart_tx_data >> sw_uart_tx_bit_count) & 1;
+            
+            // Set pin state
+            if (bit) {
+                gpio_bits_set(sw_uart_config->gpio_port, sw_uart_config->gpio_pin);
+            } else {
+                gpio_bits_reset(sw_uart_config->gpio_port, sw_uart_config->gpio_pin);
+            }
+            
+            sw_uart_tx_bit_count++;
         } else {
-            gpio_bits_reset(sw_uart_config->gpio_port, sw_uart_config->gpio_pin);
+            // Transmission complete
+            sw_uart_disable_tx();
+            
+            // Call completion callback if registered
+            if (sw_uart_tx_complete_callback) {
+                sw_uart_tx_complete_callback();
+            }
         }
-        
-        sw_uart_tx_bit_count++;
     } else {
-        // Transmission complete
-        sw_uart_disable_tx();
+        // RX mode: handle reception
+        uint8_t pin_state = gpio_input_data_bit_read(sw_uart_config->gpio_port, sw_uart_config->gpio_pin);
         
-        // Call completion callback if registered
-        if (sw_uart_tx_complete_callback) {
-            sw_uart_tx_complete_callback();
-        }
-    }
-}
-
-// RX timer interrupt handler
-void sw_uart_rx_timer_handler(void)
-{
-    if (!sw_uart_config) return;
-    
-    uint8_t pin_state = gpio_input_data_bit_read(sw_uart_config->gpio_port, sw_uart_config->gpio_pin);
-    
-    switch (sw_uart_rx_state) {
-        case SW_UART_RX_START_BIT:
-            // Sample middle of start bit
-            if ((sw_uart_config->inverted && pin_state == SET) || 
-                (!sw_uart_config->inverted && pin_state == RESET)) {
-                sw_uart_bit_counter = 0;
-                sw_uart_rx_byte = 0;
-                sw_uart_rx_state = SW_UART_RX_DATA_BITS;
-            } else {
-                sw_uart_rx_state = SW_UART_RX_IDLE;  // False start
-                sw_uart_disable_rx();
-            }
-            break;
-            
-        case SW_UART_RX_DATA_BITS:
-            // Sample data bits (LSB first)
-            if (sw_uart_config->inverted) {
-                // Inverted: LOW = 1, HIGH = 0
-                if (pin_state == RESET) {
-                    sw_uart_rx_byte |= (1 << sw_uart_bit_counter);
-                }
-            } else {
-                // Normal: HIGH = 1, LOW = 0
-                if (pin_state == SET) {
-                    sw_uart_rx_byte |= (1 << sw_uart_bit_counter);
-                }
-            }
-            
-            sw_uart_bit_counter++;
-            if (sw_uart_bit_counter >= 8) {
-                sw_uart_rx_state = SW_UART_RX_STOP_BIT;
-            }
-            break;
-            
-        case SW_UART_RX_STOP_BIT:
-            // Validate stop bit and process received byte
-            {
-                uint8_t valid_stop = 0;
-                if (sw_uart_config->inverted) {
-                    valid_stop = (pin_state == RESET);  // Stop bit = LOW
+        switch (sw_uart_rx_state) {
+            case SW_UART_RX_START_BIT:
+                // Sample middle of start bit
+                if ((sw_uart_config->inverted && pin_state == SET) || 
+                    (!sw_uart_config->inverted && pin_state == RESET)) {
+                    sw_uart_bit_counter = 0;
+                    sw_uart_rx_byte = 0;
+                    sw_uart_rx_state = SW_UART_RX_DATA_BITS;
                 } else {
-                    valid_stop = (pin_state == SET);    // Stop bit = HIGH
+                    sw_uart_rx_state = SW_UART_RX_IDLE;  // False start
+                    sw_uart_disable_rx();
+                }
+                break;
+                
+            case SW_UART_RX_DATA_BITS:
+                // Sample data bits (LSB first)
+                if (sw_uart_config->inverted) {
+                    // Inverted: LOW = 1, HIGH = 0
+                    if (pin_state == RESET) {
+                        sw_uart_rx_byte |= (1 << sw_uart_bit_counter);
+                    }
+                } else {
+                    // Normal: HIGH = 1, LOW = 0
+                    if (pin_state == SET) {
+                        sw_uart_rx_byte |= (1 << sw_uart_bit_counter);
+                    }
                 }
                 
-                if (valid_stop) {
-                    // Store received byte
-                    sw_uart_rx_buffer[sw_uart_rx_index++] = sw_uart_rx_byte;
-                    if (sw_uart_rx_index >= sizeof(sw_uart_rx_buffer)) {
-                        sw_uart_rx_index = 0;
+                sw_uart_bit_counter++;
+                if (sw_uart_bit_counter >= 8) {
+                    sw_uart_rx_state = SW_UART_RX_STOP_BIT;
+                }
+                break;
+                
+            case SW_UART_RX_STOP_BIT:
+                // Validate stop bit and process received byte
+                {
+                    uint8_t valid_stop = 0;
+                    if (sw_uart_config->inverted) {
+                        valid_stop = (pin_state == RESET);  // Stop bit = LOW
+                    } else {
+                        valid_stop = (pin_state == SET);    // Stop bit = HIGH
                     }
                     
-                    // Call RX callback if registered
-                    if (sw_uart_rx_callback) {
-                        sw_uart_rx_callback(sw_uart_rx_byte);
+                    if (valid_stop) {
+                        // Store received byte
+                        sw_uart_rx_buffer[sw_uart_rx_index++] = sw_uart_rx_byte;
+                        if (sw_uart_rx_index >= sizeof(sw_uart_rx_buffer)) {
+                            sw_uart_rx_index = 0;
+                        }
+                        
+                        // Call RX callback if registered
+                        if (sw_uart_rx_callback) {
+                            sw_uart_rx_callback(sw_uart_rx_byte);
+                        }
                     }
+                    
+                    sw_uart_rx_state = SW_UART_RX_IDLE;
+                    sw_uart_disable_rx();
                 }
+                break;
                 
+            default:
                 sw_uart_rx_state = SW_UART_RX_IDLE;
                 sw_uart_disable_rx();
-            }
-            break;
-            
-        default:
-            sw_uart_rx_state = SW_UART_RX_IDLE;
-            sw_uart_disable_rx();
-            break;
+                break;
+        }
     }
 }
+
+#endif // ENABLE_FRSKY_SPORT_TELEMETRY

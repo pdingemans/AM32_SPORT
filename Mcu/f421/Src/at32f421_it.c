@@ -8,6 +8,10 @@
 #include "common.h"
 #include "comparator.h"
 
+#ifdef ENABLE_FRSKY_SPORT_TELEMETRY
+#include "singlewire_sw_uart.h"
+#endif
+
 
 extern void transfercomplete();
 extern void PeriodElapsedCallback();
@@ -238,6 +242,19 @@ void TMR3_GLOBAL_IRQHandler(void)
     }
 }
 
+#ifdef ENABLE_FRSKY_SPORT_TELEMETRY
+/**
+ * @brief  This function handles TMR17 global interrupt (Software UART)
+ */
+void TMR17_GLOBAL_IRQHandler(void)
+{
+    if ((TMR17->ists & TMR_OVF_FLAG) != (uint16_t)RESET) {
+        TMR17->ists = (uint16_t)~TMR_OVF_FLAG;
+        sw_uart_timer_handler();
+    }
+}
+#endif
+
 // void DMA_Channel0_IRQHandler(void)         // ADC
 //{
 //	  if(LL_DMA_IsActiveFlag_TC1(DMA1) == 1)
@@ -262,10 +279,20 @@ void TMR3_GLOBAL_IRQHandler(void)
 void EXINT15_4_IRQHandler(void)
 {
     exti_int++;
+    
+    // Handle DShot EXTI line 15
     if ((EXINT->intsts & EXINT_LINE_15) != (uint32_t)RESET) {
         EXINT->intsts = EXINT_LINE_15;
         processDshot();
     }
+    
+#ifdef ENABLE_FRSKY_SPORT_TELEMETRY
+    // Handle Sport telemetry EXTI line 6 (PB6)
+    if ((EXINT->intsts & EXINT_LINE_6) != (uint32_t)RESET) {
+        EXINT->intsts = EXINT_LINE_6;
+        sw_uart_exti_handler();
+    }
+#endif
 }
 
 /******************************************************************************/
