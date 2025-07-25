@@ -9,6 +9,10 @@
 #include "common.h"
 #include "kiss_telemetry.h"
 
+#ifdef ENABLE_FRSKY_SPORT_TELEMETRY
+#include "FrSkySportTelemetry.h"
+#endif
+
 void send_telem_DMA(uint8_t bytes)
 { // set data length and enable channel to start transfer
     DMA1_CHANNEL2->ctrl_bit.chen = FALSE;
@@ -18,6 +22,13 @@ void send_telem_DMA(uint8_t bytes)
 
 void telem_UART_Init(void)
 {
+#ifdef ENABLE_FRSKY_SPORT_TELEMETRY
+    // Initialize Sport telemetry system instead of traditional UART telemetry
+    // Sport telemetry uses software UART on TMR17/PB6
+    // This will be initialized when the Sport telemetry instance is created in main
+    // No hardware UART setup needed here for Sport telemetry
+#else
+    // Traditional UART telemetry initialization
     gpio_init_type gpio_init_struct;
 
     crm_periph_clock_enable(CRM_USART1_PERIPH_CLOCK, TRUE);
@@ -61,4 +72,5 @@ void telem_UART_Init(void)
     usart_enable(USART1, TRUE);
 
     nvic_irq_enable(DMA1_Channel3_2_IRQn, 3, 0);
+#endif
 }

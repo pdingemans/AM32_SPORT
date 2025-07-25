@@ -242,18 +242,19 @@ void TMR3_GLOBAL_IRQHandler(void)
     }
 }
 
-#ifdef ENABLE_FRSKY_SPORT_TELEMETRY
 /**
- * @brief  This function handles TMR17 global interrupt (Software UART)
+ * @brief  This function handles TMR17 global interrupt
  */
 void TMR17_GLOBAL_IRQHandler(void)
 {
     if ((TMR17->ists & TMR_OVF_FLAG) != (uint16_t)RESET) {
         TMR17->ists = (uint16_t)~TMR_OVF_FLAG;
+#ifdef ENABLE_FRSKY_SPORT_TELEMETRY
+        // Handle software UART when Sport telemetry is enabled
         sw_uart_timer_handler();
+#endif
     }
 }
-#endif
 
 // void DMA_Channel0_IRQHandler(void)         // ADC
 //{

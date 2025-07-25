@@ -1,11 +1,32 @@
 /**
  * Single-wire Software UART implementation
  * Generic bit-banging UART for inverted and non-inverted protocols
+ * 
+ * Features:
+ * - AT32F421 GPIO enums for configuration (GPIO_MODE_*, GPIO_PULL_*)
+ * - Direct register manipulation for optimal performance
+ * - Pin number based configuration (vs bitmask)
+ * - Half-duplex operation with single timer
+ * - 64-byte TX FIFO queue for reliable transmission
+ * - Inverted protocol support for FrSky Sport telemetry
  */
 
 #include "singlewire_sw_uart.h"
 
-#ifdef ENABLE_FRSKY_SPORT_TELEMETRY
+// Internal function prototypes (not exposed in header)
+static uint8_t sw_uart_fifo_put(uint8_t data);
+static uint8_t sw_uart_fifo_get(uint8_t* data);
+static void sw_uart_start_next_tx(void);
+static uint8_t sw_uart_queue_byte(uint8_t data);
+static uint8_t sw_uart_queue_frame(uint8_t* buffer, uint8_t length);
+
+// UART frame bit definitions
+#define SW_UART_START_BIT           (1 << 0)  /*!< Start bit position */
+#define SW_UART_DATA_BITS_SHIFT     1         /*!< Data bits start position */
+#define SW_UART_BYTE_MASK           0xFF      /*!< Byte mask for data */
+#define SW_UART_FRAME_BITS          10        /*!< Total bits: 1 start + 8 data + 1 stop */
+
+
 
 // Static configuration and state
 static const sw_uart_config_t* sw_uart_config = NULL;
@@ -13,8 +34,6 @@ static volatile sw_uart_rx_state_t sw_uart_rx_state = SW_UART_RX_IDLE;
 static volatile uint8_t sw_uart_tx_mode = 0;  // 0 = RX mode, 1 = TX mode
 
 // RX state variables
-static volatile uint8_t sw_uart_rx_buffer[32];
-static volatile uint8_t sw_uart_rx_index = 0;
 static volatile uint8_t sw_uart_bit_counter = 0;
 static volatile uint8_t sw_uart_rx_byte = 0;
 
@@ -22,6 +41,15 @@ static volatile uint8_t sw_uart_rx_byte = 0;
 static volatile uint32_t sw_uart_tx_data = 0;
 static volatile uint8_t sw_uart_tx_bit_count = 0;
 static volatile uint8_t sw_uart_tx_active = 0;
+
+// TX FIFO queue
+
+// TX FIFO configuration
+#define SW_UART_TX_FIFO_SIZE 64
+static volatile uint8_t sw_uart_tx_fifo[SW_UART_TX_FIFO_SIZE];
+static volatile uint8_t sw_uart_tx_fifo_head = 0;
+static volatile uint8_t sw_uart_tx_fifo_tail = 0;
+static volatile uint8_t sw_uart_tx_fifo_size = 0;
 
 // Callbacks
 static sw_uart_rx_callback_t sw_uart_rx_callback = NULL;
@@ -54,6 +82,11 @@ void sw_uart_init(const sw_uart_config_t* config)
     // Enable EXTI interrupt
     nvic_irq_enable(config->exti_irq, 1, 0);
     
+    // Initialize FIFO
+    sw_uart_tx_fifo_head = 0;
+    sw_uart_tx_fifo_tail = 0;
+    sw_uart_tx_fifo_size = 0;
+    
     sw_uart_rx_state = SW_UART_RX_IDLE;
 }
 
@@ -69,6 +102,13 @@ void sw_uart_deinit(void)
     // Stop timer
     tmr_counter_enable(sw_uart_config->timer, FALSE);
     
+    // Reset FIFO
+    sw_uart_tx_fifo_head = 0;
+    sw_uart_tx_fifo_tail = 0;
+    sw_uart_tx_fifo_size = 0;
+    sw_uart_tx_active = 0;
+    sw_uart_tx_mode = 0;
+    
     sw_uart_config = NULL;
 }
 
@@ -77,19 +117,14 @@ void sw_uart_enable_rx(void)
 {
     if (!sw_uart_config) return;
     
-    gpio_init_type gpio_init_struct;
-    gpio_init_struct.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
-    gpio_init_struct.gpio_mode = GPIO_MODE_INPUT;
-    gpio_init_struct.gpio_pins = sw_uart_config->gpio_pin;
+    // Fast direct register manipulation for INPUT mode with pull-down
+    uint8_t pin_pos = sw_uart_config->gpio_pin_num;
     
-    // Set pull based on idle state
-    if (sw_uart_config->idle_state == 0) {
-        gpio_init_struct.gpio_pull = GPIO_PULL_DOWN;  // Idle LOW
-    } else {
-        gpio_init_struct.gpio_pull = GPIO_PULL_UP;    // Idle HIGH
-    }
+    // Atomic operation: Clear and set mode bits to GPIO_MODE_INPUT in one operation
+    sw_uart_config->gpio_port->cfgr = (sw_uart_config->gpio_port->cfgr & ~(0x3 << (pin_pos * 2))) | (GPIO_MODE_INPUT << (pin_pos * 2));
     
-    gpio_init(sw_uart_config->gpio_port, &gpio_init_struct);
+    // Atomic operation: Clear and set pull bits to GPIO_PULL_DOWN in one operation
+    sw_uart_config->gpio_port->pull = (sw_uart_config->gpio_port->pull & ~(0x3 << (pin_pos * 2))) | (GPIO_PULL_DOWN << (pin_pos * 2));
 }
 
 // Disable reception
@@ -109,20 +144,21 @@ void sw_uart_enable_tx(void)
 {
     if (!sw_uart_config) return;
     
-    gpio_init_type gpio_init_struct;
-    gpio_init_struct.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
-    gpio_init_struct.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
-    gpio_init_struct.gpio_mode = GPIO_MODE_OUTPUT;
-    gpio_init_struct.gpio_pins = sw_uart_config->gpio_pin;
-    gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
-    gpio_init(sw_uart_config->gpio_port, &gpio_init_struct);
+    // Fast direct register manipulation for OUTPUT mode
+    uint8_t pin_pos = sw_uart_config->gpio_pin_num;
+    uint16_t pin_mask = (1 << pin_pos);
     
-    // Set initial idle state
-    if (sw_uart_config->idle_state == 0) {
-        gpio_bits_reset(sw_uart_config->gpio_port, sw_uart_config->gpio_pin);
-    } else {
-        gpio_bits_set(sw_uart_config->gpio_port, sw_uart_config->gpio_pin);
-    }
+    // Atomic operation: Clear and set mode bits to GPIO_MODE_OUTPUT in one operation
+    sw_uart_config->gpio_port->cfgr = (sw_uart_config->gpio_port->cfgr & ~(0x3 << (pin_pos * 2))) | (GPIO_MODE_OUTPUT << (pin_pos * 2));
+    
+    // Atomic operation: Clear and set pull bits to GPIO_PULL_NONE in one operation
+    sw_uart_config->gpio_port->pull = (sw_uart_config->gpio_port->pull & ~(0x3 << (pin_pos * 2))) | (GPIO_PULL_NONE << (pin_pos * 2));
+    
+    // Set output type to push-pull (0 in ODT register)
+    sw_uart_config->gpio_port->odt &= ~pin_mask;
+    
+    // Inverted logic: set initial idle state to LOW
+    sw_uart_config->gpio_port->clr = pin_mask;
 }
 
 // Disable transmission
@@ -141,74 +177,143 @@ void sw_uart_disable_tx(void)
     sw_uart_enable_rx();
 }
 
-// Send a single byte
+// Send a single byte (legacy function - now uses FIFO)
 void sw_uart_send_byte(uint8_t data)
 {
-    if (!sw_uart_config) return;
-    
-    // Wait for any previous transmission to complete
-    while (sw_uart_tx_active);
-    
-    // Configure pin for transmission
-    sw_uart_enable_tx();
-    
-    // Prepare TX data based on protocol type
-    sw_uart_tx_data = 0;
-    
-    if (sw_uart_config->inverted) {
-        // Inverted protocol (like SPORT)
-        // Start bit = HIGH, Data inverted, Stop bit = LOW
-        sw_uart_tx_data |= (1 << 0);  // Start bit (HIGH)
-        sw_uart_tx_data |= ((~data & 0xFF) << 1);  // Data bits inverted
-        // Stop bit = LOW (bit 9 = 0)
-    } else {
-        // Normal UART protocol
-        // Start bit = LOW, Data normal, Stop bit = HIGH
-        // Start bit = LOW (bit 0 = 0)
-        sw_uart_tx_data |= ((data & 0xFF) << 1);  // Data bits normal
-        sw_uart_tx_data |= (1 << 9);  // Stop bit (HIGH)
+    sw_uart_queue_byte(data);
+}
+
+// Send a frame of bytes (legacy function - now uses FIFO)
+void sw_uart_send_frame(uint8_t* buffer, uint8_t length)
+{
+    sw_uart_queue_frame(buffer, length);
+}
+
+// Check if transmission is complete
+uint8_t sw_uart_tx_complete(void)
+{
+    return !sw_uart_tx_active && (sw_uart_tx_fifo_size == 0);
+}
+
+// FIFO helper functions
+static uint8_t sw_uart_fifo_put(uint8_t data)
+{
+    if (sw_uart_tx_fifo_size >= SW_UART_TX_FIFO_SIZE) {
+        return 0; // FIFO full
     }
+    
+    sw_uart_tx_fifo[sw_uart_tx_fifo_head] = data;
+    sw_uart_tx_fifo_head = (sw_uart_tx_fifo_head + 1) % SW_UART_TX_FIFO_SIZE;
+    sw_uart_tx_fifo_size++;
+    
+    return 1; // Success
+}
+
+static uint8_t sw_uart_fifo_get(uint8_t* data)
+{
+    if (sw_uart_tx_fifo_size == 0) {
+        return 0; // FIFO empty
+    }
+    
+    *data = sw_uart_tx_fifo[sw_uart_tx_fifo_tail];
+    sw_uart_tx_fifo_tail = (sw_uart_tx_fifo_tail + 1) % SW_UART_TX_FIFO_SIZE;
+    sw_uart_tx_fifo_size--;
+    
+    return 1; // Success
+}
+
+// Start transmission of next byte from FIFO
+static void sw_uart_start_next_tx(void)
+{
+    uint8_t data;
+    
+    if (!sw_uart_fifo_get(&data)) {
+        // No more data to send, return to RX mode
+        sw_uart_tx_mode = 0;
+        sw_uart_enable_rx();
+        return;
+    }
+    
+    // Prepare TX data for inverted protocol (like SPORT)
+    // Start bit = HIGH, Data inverted, Stop bit = LOW
+    sw_uart_tx_data = 0;
+    sw_uart_tx_data |= SW_UART_START_BIT;  // Start bit (HIGH)
+    sw_uart_tx_data |= ((~data & SW_UART_BYTE_MASK) << SW_UART_DATA_BITS_SHIFT);  // Data bits inverted
+    // Stop bit = LOW (bit 9 = 0)
     
     // Start transmission
     sw_uart_tx_bit_count = 0;
     sw_uart_tx_active = 1;
     sw_uart_tx_mode = 1;  // Switch to TX mode
     
-    // Configure and start timer
-    uint32_t timer_period = (120000000 / sw_uart_config->baud_rate) - 1;
-    tmr_base_init(sw_uart_config->timer, timer_period, 0);
-    tmr_cnt_dir_set(sw_uart_config->timer, TMR_COUNT_UP);
-    
-    tmr_interrupt_enable(sw_uart_config->timer, TMR_OVF_INT, TRUE);
-    nvic_irq_enable(sw_uart_config->timer_irq, 2, 0);
-    
-    tmr_counter_enable(sw_uart_config->timer, TRUE);
+    // Configure and start timer if not already running
+    if (!tmr_flag_get(sw_uart_config->timer, TMR_OVF_FLAG)) {
+        uint32_t timer_period = (120000000 / sw_uart_config->baud_rate) - 1;
+        tmr_base_init(sw_uart_config->timer, timer_period, 0);
+        tmr_cnt_dir_set(sw_uart_config->timer, TMR_COUNT_UP);
+        
+        tmr_interrupt_enable(sw_uart_config->timer, TMR_OVF_INT, TRUE);
+        nvic_irq_enable(sw_uart_config->timer_irq, 2, 0);
+        
+        tmr_counter_enable(sw_uart_config->timer, TRUE);
+    }
 }
 
-// Send a frame of bytes
-void sw_uart_send_frame(uint8_t* buffer, uint8_t length)
+// Queue a single byte for transmission
+static uint8_t sw_uart_queue_byte(uint8_t data)
 {
-    if (!sw_uart_config || !buffer) return;
+    if (!sw_uart_config) return 0;
     
-    // Disable EXTI during transmission to avoid conflicts
-    nvic_irq_disable(sw_uart_config->exti_irq);
-    
-    for (uint8_t i = 0; i < length; i++) {
-        sw_uart_send_byte(buffer[i]);
-        while (sw_uart_tx_active);  // Wait for completion
+    // Try to add to FIFO
+    if (!sw_uart_fifo_put(data)) {
+        return 0; // FIFO full
     }
     
-    // Re-enable EXTI for reception
-    nvic_irq_enable(sw_uart_config->exti_irq, 1, 0);
+    // If not currently transmitting, start transmission
+    if (!sw_uart_tx_active && sw_uart_tx_mode == 0) {
+        // Configure pin for transmission
+        sw_uart_enable_tx();
+        
+        // Disable EXTI during transmission to avoid conflicts
+        nvic_irq_disable(sw_uart_config->exti_irq);
+        
+        // Start transmitting
+        sw_uart_start_next_tx();
+    }
     
-    // Return to RX mode
-    sw_uart_enable_rx();
+    return 1; // Success
 }
 
-// Check if transmission is complete
-uint8_t sw_uart_tx_complete(void)
+// Queue multiple bytes for transmission
+static uint8_t sw_uart_queue_frame(uint8_t* buffer, uint8_t length)
 {
-    return !sw_uart_tx_active;
+    if (!sw_uart_config || !buffer) return 0;
+    
+    // Check if there's enough space in FIFO
+    if (sw_uart_tx_fifo_size + length > SW_UART_TX_FIFO_SIZE) {
+        return 0; // Not enough space
+    }
+    
+    // Add all bytes to FIFO
+    for (uint8_t i = 0; i < length; i++) {
+        if (!sw_uart_fifo_put(buffer[i])) {
+            return 0; // Should not happen due to space check above
+        }
+    }
+    
+    // If not currently transmitting, start transmission
+    if (!sw_uart_tx_active && sw_uart_tx_mode == 0) {
+        // Configure pin for transmission
+        sw_uart_enable_tx();
+        
+        // Disable EXTI during transmission to avoid conflicts
+        nvic_irq_disable(sw_uart_config->exti_irq);
+        
+        // Start transmitting
+        sw_uart_start_next_tx();
+    }
+    
+    return 1; // Success
 }
 
 // Set RX callback
@@ -228,29 +333,17 @@ void sw_uart_exti_handler(void)
 {
     if (!sw_uart_config) return;
     
-    uint8_t pin_state = gpio_input_data_bit_read(sw_uart_config->gpio_port, sw_uart_config->gpio_pin);
+    // Calculate pin mask from pin number
+    uint16_t pin_mask = (1 << sw_uart_config->gpio_pin_num);
+    uint8_t pin_state = (sw_uart_config->gpio_port->idt & pin_mask) ? SET : RESET;
     
-    // Detect start bit edge based on protocol type
-    uint8_t start_bit_detected = 0;
-    
-    if (sw_uart_config->inverted) {
-        // Inverted protocol: start bit is LOW→HIGH transition
-        if (sw_uart_rx_state == SW_UART_RX_IDLE && pin_state == SET) {
-            start_bit_detected = 1;
-        }
-    } else {
-        // Normal UART: start bit is HIGH→LOW transition
-        if (sw_uart_rx_state == SW_UART_RX_IDLE && pin_state == RESET) {
-            start_bit_detected = 1;
-        }
-    }
-    
-    if (start_bit_detected) {
+    // Inverted protocol: start bit is LOW→HIGH transition
+    if (sw_uart_rx_state == SW_UART_RX_IDLE && pin_state == SET) {
         sw_uart_rx_state = SW_UART_RX_START_BIT;
         sw_uart_tx_mode = 0;  // Ensure we're in RX mode
         
-        // Start bit sampling timer
-        uint32_t timer_period = (120000000 / sw_uart_config->baud_rate) - 1;
+        // Start timer with half bit period to sample start bit in the middle
+        uint32_t timer_period = ((120000000 / sw_uart_config->baud_rate) / 2) - 1;  // Half bit period
         tmr_base_init(sw_uart_config->timer, timer_period, 0);
         tmr_cnt_dir_set(sw_uart_config->timer, TMR_COUNT_UP);
         
@@ -268,39 +361,62 @@ void sw_uart_timer_handler(void)
     
     if (sw_uart_tx_mode) {
         // TX mode: handle transmission
-        if (sw_uart_tx_bit_count < 10) {  // 1 start + 8 data + 1 stop = 10 bits
-            // Get current bit to transmit
-            uint8_t bit = (sw_uart_tx_data >> sw_uart_tx_bit_count) & 1;
+        if (sw_uart_tx_bit_count < SW_UART_FRAME_BITS) {  // 1 start + 8 data + 1 stop = 10 bits
+            // Check current bit (LSB) and set pin state directly
+            uint16_t pin_mask = (1 << sw_uart_config->gpio_pin_num);
             
-            // Set pin state
-            if (bit) {
-                gpio_bits_set(sw_uart_config->gpio_port, sw_uart_config->gpio_pin);
+            if (sw_uart_tx_data & 1) {
+                sw_uart_config->gpio_port->scr = pin_mask;  // Set pin HIGH
             } else {
-                gpio_bits_reset(sw_uart_config->gpio_port, sw_uart_config->gpio_pin);
+                sw_uart_config->gpio_port->clr = pin_mask;  // Set pin LOW
             }
             
+            // Shift data left for next bit
+            sw_uart_tx_data >>= 1;
             sw_uart_tx_bit_count++;
         } else {
-            // Transmission complete
-            sw_uart_disable_tx();
+            // Current byte transmission complete
+            sw_uart_tx_active = 0;
             
-            // Call completion callback if registered
-            if (sw_uart_tx_complete_callback) {
-                sw_uart_tx_complete_callback();
+            // Check if there are more bytes in FIFO to transmit
+            if (sw_uart_tx_fifo_size > 0) {
+                // Start next byte transmission
+                sw_uart_start_next_tx();
+            } else {
+                // All bytes sent, disable transmission and return to RX
+                tmr_counter_enable(sw_uart_config->timer, FALSE);
+                tmr_interrupt_enable(sw_uart_config->timer, TMR_OVF_INT, FALSE);
+                
+                sw_uart_tx_mode = 0;  // Switch back to RX mode
+                
+                // Re-enable EXTI for reception
+                nvic_irq_enable(sw_uart_config->exti_irq, 1, 0);
+                
+                // Return to RX mode
+                sw_uart_enable_rx();
+                
+                // Call completion callback if registered
+                if (sw_uart_tx_complete_callback) {
+                    sw_uart_tx_complete_callback();
+                }
             }
         }
     } else {
         // RX mode: handle reception
-        uint8_t pin_state = gpio_input_data_bit_read(sw_uart_config->gpio_port, sw_uart_config->gpio_pin);
+        uint16_t pin_mask = (1 << sw_uart_config->gpio_pin_num);
+        uint8_t pin_state = (sw_uart_config->gpio_port->idt & pin_mask) ? SET : RESET;
         
         switch (sw_uart_rx_state) {
             case SW_UART_RX_START_BIT:
-                // Sample middle of start bit
-                if ((sw_uart_config->inverted && pin_state == SET) || 
-                    (!sw_uart_config->inverted && pin_state == RESET)) {
+                // Sample middle of start bit (inverted: should be HIGH)
+                if (pin_state == SET) {
                     sw_uart_bit_counter = 0;
                     sw_uart_rx_byte = 0;
                     sw_uart_rx_state = SW_UART_RX_DATA_BITS;
+                    
+                    // Reconfigure timer for full bit periods for data bits
+                    uint32_t full_bit_period = (120000000 / sw_uart_config->baud_rate) - 1;
+                    tmr_base_init(sw_uart_config->timer, full_bit_period, 0);
                 } else {
                     sw_uart_rx_state = SW_UART_RX_IDLE;  // False start
                     sw_uart_disable_rx();
@@ -308,17 +424,9 @@ void sw_uart_timer_handler(void)
                 break;
                 
             case SW_UART_RX_DATA_BITS:
-                // Sample data bits (LSB first)
-                if (sw_uart_config->inverted) {
-                    // Inverted: LOW = 1, HIGH = 0
-                    if (pin_state == RESET) {
-                        sw_uart_rx_byte |= (1 << sw_uart_bit_counter);
-                    }
-                } else {
-                    // Normal: HIGH = 1, LOW = 0
-                    if (pin_state == SET) {
-                        sw_uart_rx_byte |= (1 << sw_uart_bit_counter);
-                    }
+                // Sample data bits (LSB first) - Inverted: LOW = 1, HIGH = 0
+                if (pin_state == RESET) {
+                    sw_uart_rx_byte |= (1 << sw_uart_bit_counter);
                 }
                 
                 sw_uart_bit_counter++;
@@ -328,31 +436,16 @@ void sw_uart_timer_handler(void)
                 break;
                 
             case SW_UART_RX_STOP_BIT:
-                // Validate stop bit and process received byte
-                {
-                    uint8_t valid_stop = 0;
-                    if (sw_uart_config->inverted) {
-                        valid_stop = (pin_state == RESET);  // Stop bit = LOW
-                    } else {
-                        valid_stop = (pin_state == SET);    // Stop bit = HIGH
+                // Validate stop bit (inverted: should be LOW)
+                if (pin_state == RESET) {
+                    // Call RX callback if registered
+                    if (sw_uart_rx_callback) {
+                        sw_uart_rx_callback(sw_uart_rx_byte);
                     }
-                    
-                    if (valid_stop) {
-                        // Store received byte
-                        sw_uart_rx_buffer[sw_uart_rx_index++] = sw_uart_rx_byte;
-                        if (sw_uart_rx_index >= sizeof(sw_uart_rx_buffer)) {
-                            sw_uart_rx_index = 0;
-                        }
-                        
-                        // Call RX callback if registered
-                        if (sw_uart_rx_callback) {
-                            sw_uart_rx_callback(sw_uart_rx_byte);
-                        }
-                    }
-                    
-                    sw_uart_rx_state = SW_UART_RX_IDLE;
-                    sw_uart_disable_rx();
                 }
+                
+                sw_uart_rx_state = SW_UART_RX_IDLE;
+                sw_uart_disable_rx();
                 break;
                 
             default:
@@ -363,4 +456,4 @@ void sw_uart_timer_handler(void)
     }
 }
 
-#endif // ENABLE_FRSKY_SPORT_TELEMETRY
+

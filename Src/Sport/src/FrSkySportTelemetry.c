@@ -27,28 +27,8 @@ FrSkySportTelemetry* frsky_sport_telemetry_create(void)
             self->sensors[i] = NULL;
         }
         
-#ifdef ENABLE_FRSKY_SPORT_TELEMETRY
-        // Initialize software UART configuration for Sport telemetry
-        // PB6, 57600 baud, inverted logic, Timer 10
-        self->uart_config.gpio_port = GPIOB;
-        self->uart_config.gpio_pin = GPIO_PINS_6;
-        self->uart_config.baud_rate = 57600;
-        self->uart_config.inverted = true;        // Sport uses inverted logic
-        self->uart_config.idle_state = 0;         // Inverted idle = LOW
-        
-        // EXTI configuration for PB6
-        self->uart_config.exti_line = EXINT_LINE_6;
-        self->uart_config.exti_irq = EXINT15_4_IRQn;
-        self->uart_config.scfg_source = SCFG_PINS_SOURCE6;
-        
-        // Timer configuration (using TMR17 for both TX and RX)
-        self->uart_config.timer = TMR17;
-        self->uart_config.timer_clk = CRM_TMR17_PERIPH_CLOCK;
-        self->uart_config.timer_irq = TMR17_GLOBAL_IRQn;
-        
-        // Initialize software UART
-        sw_uart_init(&self->uart_config);
-#endif
+        // Software UART is now initialized in peripherals.c via Sport_UART_Init()
+        // No need to initialize it here anymore
         
         // Initialize the serial structure
         // Note: This assumes the serial structure is embedded, not a pointer

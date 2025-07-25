@@ -48,3 +48,6 @@ void reloadWatchDogCounter(void);
 void generatePwmTimerEvent(void);
 void UN_TIM_Init(void);
 void LED_GPIO_init(void);
+#ifdef ENABLE_FRSKY_SPORT_TELEMETRY
+void Sport_UART_Init(void);
+#endif

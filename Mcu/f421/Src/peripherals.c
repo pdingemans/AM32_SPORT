@@ -20,6 +20,9 @@
 #ifdef USE_LED_STRIP
 #include "WS2812.h"
 #endif
+#ifdef ENABLE_FRSKY_SPORT_TELEMETRY
+#include "singlewire_sw_uart.h"
+#endif
 
 void initCorePeripherals(void)
 {
@@ -37,6 +40,9 @@ void initCorePeripherals(void)
     UN_TIM_Init();
 #ifdef USE_SERIAL_TELEMETRY
     telem_UART_Init();
+#endif
+#ifdef ENABLE_FRSKY_SPORT_TELEMETRY
+    Sport_UART_Init();
 #endif
 #ifdef USE_LED_STRIP
     WS2812_Init();
@@ -200,6 +206,32 @@ void MX_DMA_Init(void)
 }
 
 void MX_GPIO_Init(void) { }
+
+#ifdef ENABLE_FRSKY_SPORT_TELEMETRY
+void Sport_UART_Init(void)
+{
+    // Software UART configuration for Sport telemetry
+    // PB6, 57600 baud, inverted logic, TMR17
+    sw_uart_config_t uart_config;
+    
+    uart_config.gpio_port = GPIOB;
+    uart_config.gpio_pin_num = 6;  // Pin number for PB6
+    uart_config.baud_rate = 57600;
+    
+    // EXTI configuration for PB6
+    uart_config.exti_line = EXINT_LINE_6;
+    uart_config.exti_irq = EXINT15_4_IRQn;
+    uart_config.scfg_source = SCFG_PINS_SOURCE6;
+    
+    // Timer configuration (using TMR17 for both TX and RX)
+    uart_config.timer = TMR17;
+    uart_config.timer_clk = CRM_TMR17_PERIPH_CLOCK;
+    uart_config.timer_irq = TMR17_GLOBAL_IRQn;
+    
+    // Initialize software UART
+    sw_uart_init(&uart_config);
+}
+#endif
 
 void UN_TIM_Init(void)
 {
