@@ -24,6 +24,11 @@ void setInputPullUp();
 void enableHalfTransferInt();
 void setInputPullNone();
 
+void atomic_exti_bit_modify(uint32_t line, uint8_t state);
+void atomic_event_bit_modify(uint32_t line, uint8_t state);
+void atomic_polcfg1_bit_modify(uint32_t line, uint8_t state);
+void atomic_polcfg2_bit_modify(uint32_t line, uint8_t state);
+
 extern char inputSet;
 extern char dshot;
 extern char servoPwm;

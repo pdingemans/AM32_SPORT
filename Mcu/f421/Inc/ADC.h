@@ -16,6 +16,9 @@ void enableADC_DMA();
 void activateADC();
 void ADC_Init(void);
 void startADCConversion();
+
+void disable_ADC(void);
+void enable_ADC(void);
 int16_t getConvertedDegrees(uint16_t adcrawtemp);
 
 #endif /* ADC_H_ */

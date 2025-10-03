@@ -36,14 +36,17 @@ void SVC_Handler(void);
 void DebugMon_Handler(void);
 void PendSV_Handler(void);
 void SysTick_Handler(void);
+uint32_t millis(void);
 void ADC1_CMP_IRQHandler(void);
 void TMR14_GLOBAL_IRQHandler(void);
 void TMR15_GLOBAL_IRQHandler(void);
 void TMR16_GLOBAL_IRQHandler(void);
 void TMR17_GLOBAL_IRQHandler(void);
 void TMR3_GLOBAL_IRQHandler(void);
+void TMR6_GLOBAL_IRQHandler(void);
 void DMA1_Channel5_4_IRQHandler(void);
 void DMA1_Channel1_IRQHandler(void);
 void DMA1_Channel3_2_IRQHandler(void);
+
 void EXINT15_4_IRQHandler(void);
 #endif /* __AT32F4XX_IT_H */

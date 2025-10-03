@@ -18,6 +18,51 @@ uint32_t dma_buffer[64] = { 0 };
 char out_put = 0;
 uint8_t buffer_padding = 7;
 
+// Bit-band alias region addresses for AT32F421
+#define PERIPH_BB_BASE        0x42000000UL
+
+// Calculate bit-band alias address using AT32F421 datasheet formula
+// For peripheral bit-band: AliasAddr = 0x4200_0000 + (A-0x4000_0000)*32 + n*4
+#define BITBAND_PERIPH(addr, bit) \
+    ((PERIPH_BB_BASE + (((uint32_t)(addr) - PERIPH_BASE) << 5) + ((bit) << 2)))
+
+
+// EXTI register addresses
+#define EXTI_BASE             0x40010400UL
+#define EXTI_INTEN_ADDR       (EXTI_BASE + 0x00)  // INTEN register offset
+#define EXTI_EVTEN_ADDR       (EXTI_BASE + 0x04)  // EVTEN register offset
+#define EXTI_POLCFG1_ADDR     (EXTI_BASE + 0x08)  // POLCFG1 register offset
+#define EXTI_POLCFG2_ADDR     (EXTI_BASE + 0x0C)  // POLCFG2 register offset
+#define EXTI_INTSTS_ADDR      (EXTI_BASE + 0x14)  // INTSTS register offset
+
+void atomic_exti_bit_modify(uint32_t line, uint8_t state) {
+    // Calculate bit-band address for specific EXTI line
+    volatile uint32_t* bitband_addr = (volatile uint32_t*)BITBAND_PERIPH(EXTI_INTEN_ADDR, line);
+    *bitband_addr = state;  // Atomic bit set/clear - cannot be interrupted
+
+}
+void atomic_event_bit_modify(uint32_t line, uint8_t state) {
+    // Calculate bit-band address for specific EXTI line
+    volatile uint32_t* bitband_addr = (volatile uint32_t*)BITBAND_PERIPH(EXTI_EVTEN_ADDR, line);
+    *bitband_addr = state;  // Atomic bit set/clear - cannot be interrupted
+
+}
+
+void atomic_polcfg1_bit_modify(uint32_t line, uint8_t state) {
+    // Calculate bit-band address for specific EXTI line
+    volatile uint32_t* bitband_addr = (volatile uint32_t*)BITBAND_PERIPH(EXTI_POLCFG1_ADDR, line);
+    *bitband_addr = state;  // Atomic bit set/clear - cannot be interrupted
+
+}
+
+void atomic_polcfg2_bit_modify(uint32_t line, uint8_t state) {
+    // Calculate bit-band address for specific EXTI line
+    volatile uint32_t* bitband_addr = (volatile uint32_t*)BITBAND_PERIPH(EXTI_POLCFG2_ADDR, line);
+    *bitband_addr = state;  // Atomic bit set/clear - cannot be interrupted
+
+}
+
+
 void changeToOutput()
 {
     INPUT_DMA_CHANNEL->ctrl |= DMA_DIR_MEMORY_TO_PERIPHERAL;

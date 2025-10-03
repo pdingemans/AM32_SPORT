@@ -21,6 +21,7 @@
 #include "WS2812.h"
 #endif
 
+
 void initCorePeripherals(void)
 {
     system_clock_config();
@@ -35,12 +36,30 @@ void initCorePeripherals(void)
     TIM16_Init();
 
     UN_TIM_Init();
-#ifdef USE_SERIAL_TELEMETRY
-    telem_UART_Init();
-#endif
+    // initialusation of telelemtry uart has been moved to appropriate telemetry .c files...
+
+// we have add systick interrupt for 1 msec.
+
+    SysTick_init();
+
+
 #ifdef USE_LED_STRIP
     WS2812_Init();
 #endif
+}
+void SysTick_init(void)
+{
+    NVIC_SetPriority(SysTick_IRQn, 15);
+
+    systick_clock_source_config(SYSTICK_CLOCK_SOURCE_AHBCLK_DIV8);
+  
+    /* Configure SysTick for 1ms interrupts */
+    /* AT32F421 runs at 120MHz, SysTick clock = 120MHz/8 = 15MHz */
+    /* For 1ms: 15MHz / 1000 = 15,000 cycles */
+    SysTick->LOAD = 15000 - 1;  // 1ms period (15,000 cycles at 15MHz)
+    SysTick->VAL = 0;           // Clear current value
+    SysTick->CTRL |= SysTick_CTRL_ENABLE_Msk;
+    SysTick->CTRL |= SysTick_CTRL_TICKINT_Msk; // RE-ENABLED: Testing minimal safe SysTick interrupt
 }
 
 void initAfterJump(void) { __enable_irq(); }
@@ -185,11 +204,15 @@ void TIM16_Init(void)
 void TIM17_Init(void)
 {
     crm_periph_clock_enable(CRM_TMR17_PERIPH_CLOCK, TRUE);
-    TMR17->pr = 0xFFFF;
-    TMR17->div = 119;
-    TMR17->ctrl1_bit.prben = TRUE;
-
-    // TMR_Cmd(TMR15, ENABLE);
+    TMR17->pr = 0xFFFF;           // Period register
+    TMR17->div = 119;             // Prescaler: 120MHz / (119+1) = 1MHz = 1μs per tick
+    TMR17->ctrl1_bit.prben = TRUE; // Enable auto-reload preload
+    
+    // Generate update event to load prescaler and period register
+    TMR17->swevt |= TMR_OVERFLOW_SWTRIG;
+    
+    // Clear update interrupt flag (if any)
+    TMR17->ists = 0;
 }
 
 void MX_DMA_Init(void)
@@ -326,11 +349,21 @@ void enableCorePeripherals()
     tmr_channel_enable(IC_TIMER_REGISTER, IC_TIMER_CHANNEL, TRUE);
     IC_TIMER_REGISTER->ctrl1_bit.tmren = TRUE;
 #endif
-
+    // singlewire sw uart extintline has higer prio as the 
+    // processing of PWM data, which happens in exint3.
+    // previously it happened in the same interrupt handle
+    // separated so we dont miss the rising edge of our 57600 bps signal
+    // note this does not interfere with dhot as dhsot and pwm are mutally exclusive
+    // its silly to use dhsot and serial telemetry at the same time as dhsot has
+    // telemetry itself
     NVIC_SetPriority(EXINT15_4_IRQn, 2);
     NVIC_EnableIRQ(EXINT15_4_IRQn);
     EXINT->inten |= EXINT_LINE_15;
-		
+
+    NVIC_SetPriority(EXINT3_2_IRQn, 5);
+    NVIC_EnableIRQ(EXINT3_2_IRQn);
+    EXINT->inten |= EXINT_LINE_3;
+
 #ifdef USE_PULSE_OUT
  gpio_mode_QUICK(GPIOB, GPIO_MODE_OUTPUT, GPIO_PULL_NONE, GPIO_PINS_8);
 #endif

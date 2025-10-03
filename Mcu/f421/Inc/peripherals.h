@@ -48,3 +48,4 @@ void reloadWatchDogCounter(void);
 void generatePwmTimerEvent(void);
 void UN_TIM_Init(void);
 void LED_GPIO_init(void);
+void SysTick_init(void);

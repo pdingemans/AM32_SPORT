@@ -233,6 +233,8 @@ an settings option)
 #include <stdint.h>
 #include <string.h>
 #include <assert.h>
+#include "sport_telemetry.h"
+
 
 #ifdef USE_LED_STRIP
 #include "WS2812.h"
@@ -244,6 +246,10 @@ an settings option)
 
 #if DRONECAN_SUPPORT
 #include "DroneCAN/DroneCAN.h"
+#endif
+
+#ifdef USE_SERIAL_TELEMETRY
+serial_telemetry_class* serial_telemetry;
 #endif
 
 #include <version.h>
@@ -302,6 +308,10 @@ fastPID stallPid = { // 1khz loop time
     .output_limit = 50000
 };
 
+#ifdef USE_SERIAL_TELEMETRY
+serial_telemetry_class* serial_telemetry = NULL;
+#endif
+
 EEprom_t eepromBuffer;
 volatile uint8_t ramp_divider;
 volatile uint8_t max_ramp_startup = RAMP_SPEED_STARTUP;
@@ -319,7 +329,6 @@ uint16_t target_e_com_time_low;
 uint8_t compute_dshot_flag = 0;
 uint8_t crsf_input_channel = 1;
 uint8_t crsf_output_PWM_channel = 2;
-uint8_t telemetry_interval_ms = 30;
 uint8_t temp_advance;
 uint16_t motor_kv = 2000;
 uint8_t dead_time_override = DEAD_TIME;
@@ -327,6 +336,7 @@ uint16_t stall_protect_target_interval = TARGET_STALL_PROTECTION_INTERVAL;
 uint16_t enter_sine_angle = 180;
 char do_once_sinemode = 0;
 uint8_t auto_advance_level;
+
 
 //============================= Servo Settings ==============================
 uint16_t servo_low_threshold = 1100; // anything below this point considered 0
@@ -1343,16 +1353,7 @@ void tenKhzRoutine()
         }
     }
 
-    if (eepromBuffer.telemetry_on_interval) {
-        telem_ms_count++;
-        if (telem_ms_count > ((telemetry_interval_ms - 1 + eepromBuffer.telemetry_on_interval) * 20)) {
-            // telemetry_on_interval = 1 is a boolean, but it can also be 2 or more to indicate an identifier
-            // by making the interval just slightly different with an unique identifier, we can guarantee that many ESCs can communicate on just one signal
-            // there will be some collisions but not as many as if two ESCs always tried to talk at once.
-            send_telemetry = 1;
-            telem_ms_count = 0;
-        }
-    }
+    // check for interval for telemetry is moved to kisstelemetry
 
 #ifndef BRUSHED_MODE
 
@@ -1691,6 +1692,27 @@ int main(void)
     checkDeviceInfo();
     initCorePeripherals();
     enableCorePeripherals();
+       // added initialisation of telemetry
+    // id ranging from 0-9 are KISS ESC's
+    // id between from 10-19 are sport ESC's
+    // sport ESC ID will be id minus 1, so ID 10 will be SPORT ID10, (which is 9 :))
+
+#ifdef USE_SERIAL_TELEMETRY
+    uint8_t id = eepromBuffer.telemetry_on_interval;
+    id = 10; // for the test needs to be removed!!!
+    if (id<10)
+    {
+        serial_telemetry = init_kiss_telemetry();
+        // if id == 0 no interval telemetry is send
+        // if id > 0 telemetry is send on interval id+29
+        serial_telemetry->set_id(serial_telemetry,id);
+    }
+    else if (id <20)
+    {
+        serial_telemetry = init_sport_telemetry();
+        serial_telemetry->set_id(serial_telemetry,id);
+    }
+#endif
     loadEEpromSettings();
 
     if (VERSION_MAJOR != eepromBuffer.version.major || VERSION_MINOR != eepromBuffer.version.minor || EEPROM_VERSION > eepromBuffer.eeprom_version) {
@@ -1823,6 +1845,18 @@ int main(void)
 #endif
 
     while (1) {
+
+#ifdef USE_SERIAL_TELEMETRY
+        // following code is for serial telemetry
+        // the called function will need to check if data needs to be send
+        // in this main we do not want to know what is happening
+        // so we delegate all the work to the serial_telemetry object
+        if (serial_telemetry != NULL) // just to be on the safe side..
+        {
+            serial_telemetry->handle_esc_telemetry(serial_telemetry);
+        }
+#endif
+
 e_com_time = ((commutation_intervals[0] + commutation_intervals[1] + commutation_intervals[2] + commutation_intervals[3] + commutation_intervals[4] + commutation_intervals[5]) + 4) >> 1; // COMMUTATION INTERVAL IS 0.5US INCREMENTS
 #if defined(FIXED_DUTY_MODE) || defined(FIXED_SPEED_MODE)
         setInput();
@@ -1987,18 +2021,19 @@ if(zero_crosses < 5){
              NVIC_SetPriority(COMPARATOR_IRQ, 0);
          }
 #endif
-        if (send_telemetry) {
+           
+            // we set the telemetry data overhere
+            // all other data processing (flag interpretation etc) is done in the telemetry object
 #ifdef USE_SERIAL_TELEMETRY
-            makeTelemPackage((int8_t)degrees_celsius, battery_voltage, actual_current,
-                (uint16_t)(consumed_current >> 16), e_rpm);
-            send_telem_DMA(10);
-            send_telemetry = 0;
+            // wejust send the data to the telemetry, its up to the telemetry
+            // to store/process/send etc it.
+            serial_telemetry->makeTelemPackage(serial_telemetry,(int8_t)degrees_celsius, battery_voltage, actual_current,
+                             (uint16_t)(consumed_current >> 16), e_rpm);
+
 #endif
-        } else if(send_esc_info_flag ) {
-           makeInfoPacket();
-           send_telem_DMA(49);
-           send_esc_info_flag = 0;
-        }
+        
+            
+    
         if (PROCESS_ADC_FLAG == 1) { // for adc and telemetry set adc counter at 1khz loop rate
 #if defined(STMICRO)
             ADC_DMA_Callback();
@@ -2013,7 +2048,9 @@ if(zero_crosses < 5){
 #endif
 #ifdef ARTERY
             ADC_DMA_Callback();
-            adc_ordinary_software_trigger_enable(ADC1, TRUE);
+            // we do not start the ADC conversion as it is running in a loop
+            // continuesly already
+            // adc_ordinary_software_trigger_enable(ADC1, TRUE);
             converted_degrees = getConvertedDegrees(ADC_raw_temp);
 #endif
 #ifdef WCH
@@ -2027,7 +2064,7 @@ if(zero_crosses < 5){
             if (actual_current < 0) {
                 actual_current = 0;
             }             
-            if (eepromBuffer.low_voltage_cut_off == 1) {  
+         if (eepromBuffer.low_voltage_cut_off == 1) {  
                 if (battery_voltage < (cell_count * low_cell_volt_cutoff)) {
                   low_voltage_count++;
                 } else {

@@ -30,7 +30,8 @@ extern uint16_t battery_voltage;
 extern int16_t actual_current;
 extern uint16_t e_rpm;
 extern uint32_t average_interval;
-
+extern char send_telemetry ;
+extern char send_esc_info_flag;
 
 #ifdef STMICRO
 extern GPIO_TypeDef* current_GPIO_PORT;
