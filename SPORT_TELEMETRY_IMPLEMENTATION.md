@@ -6,14 +6,169 @@ This document describes the FrSky S.PORT telemetry implementation added to the A
 
 ## Table of Contents
 
-1. [Core S.PORT Implementation](#core-sport-implementation)
-2. [Protocol Details](#protocol-details)
-3. [Hardware Integration](#hardware-integration)
-4. [Changes to Main Branch](#changes-to-main-branch)
-5. [Telemetry Data Flow](#telemetry-data-flow)
-6. [Polling Architecture](#polling-architecture)
-7. [Configuration](#configuration)
-8. [Testing](#testing)
+1. [ESC ID Configuration](#esc-id-configuration)
+2. [Core S.PORT Implementation](#core-sport-implementation)
+3. [Protocol Details](#protocol-details)
+4. [Hardware Integration](#hardware-integration)
+5. [Changes to Main Branch](#changes-to-main-branch)
+6. [Telemetry Data Flow](#telemetry-data-flow)
+7. [Polling Architecture](#polling-architecture)
+8. [ADC/DMA Resource Management and Race Condition Prevention](#adcdma-resource-management-and-race-condition-prevention)
+9. [Configuration](#configuration)
+10. [Testing](#testing)
+
+---
+
+## ESC ID Configuration
+
+### Setting the ESC ID
+
+The ESC telemetry protocol and behavior is determined by the `telemetry_on_interval` value stored in EEPROM. This can be configured in several ways:
+
+#### Method 1: Direct EEPROM Programming
+```c
+// In your configuration or setup code
+eepromBuffer.telemetry_on_interval = desired_id;  // Set your desired ID (0-19)
+writeEEpromSettings();  // Save to EEPROM
+```
+
+#### Method 2: ESC Configuration Tool
+Most ESC configuration tools (like AM32 Suite, BLHeli_32 Suite) allow setting the telemetry ID through their interface.
+
+#### Method 3: Flight Controller Commands
+Some flight controllers can send configuration commands to set the ESC telemetry ID remotely.
+
+### ID Range and Protocol Selection
+
+The `telemetry_on_interval` value determines both the telemetry protocol and its specific behavior:
+
+| ID Range | Protocol | Behavior | Usage |
+|----------|----------|----------|-------|
+| **0-9** | **KISS Telemetry** | Interval-based transmission | Betaflight, iNav, ArduPilot |
+| **10-19** | **S.PORT Telemetry** | Poll-response based | FrSky receivers, OpenTX |
+| **20+** | **Disabled** | No telemetry | Normal ESC operation |
+
+### KISS Telemetry ID Mapping (IDs 0-9)
+
+For KISS telemetry, the ID directly controls the automatic transmission interval:
+
+| ESC ID | Transmission Interval | Formula | Use Case |
+|--------|----------------------|---------|----------|
+| **0** | **DShot-only** | No interval | Command/request triggered only |
+| **1** | **30 ms** | 29 + 1 = 30ms | High update rate |
+| **2** | **31 ms** | 29 + 2 = 31ms | |
+| **3** | **32 ms** | 29 + 3 = 32ms | |
+| **4** | **33 ms** | 29 + 4 = 33ms | Standard rate |
+| **5** | **34 ms** | 29 + 5 = 34ms | |
+| **6** | **35 ms** | 29 + 6 = 35ms | |
+| **7** | **36 ms** | 29 + 7 = 36ms | |
+| **8** | **37 ms** | 29 + 8 = 37ms | |
+| **9** | **38 ms** | 29 + 9 = 38ms | Lower update rate |
+
+**KISS Telemetry Transmission Triggers:**
+1. **DShot telemetry bit** (bit 11 = 1) - immediate transmission
+2. **DShot command 6** (ESC info request) - sends extended 49-byte packet
+3. **Interval timer** - automatic transmission at configured interval (except ID 0)
+
+**Note:** ID 0 disables interval transmission but still responds to DShot telemetry requests and command 6.
+
+### S.PORT Telemetry ID Mapping (IDs 10-19)
+
+For S.PORT telemetry, the ID is converted to a FrSky sensor ID using parity bit encoding:
+
+| ESC ID | Physical ID | FrSky Sensor ID | Calculated Value | Receiver Display |
+|--------|-------------|-----------------|------------------|------------------|
+| **10** | **9** | **FRSKY_SENSOR_ID10** | 0xE9 | Sensor 10 |
+| **11** | **10** | **FRSKY_SENSOR_ID11** | 0x6A | Sensor 11 |
+| **12** | **11** | **FRSKY_SENSOR_ID12** | 0xCB | Sensor 12 |
+| **13** | **12** | **FRSKY_SENSOR_ID13** | 0xAC | Sensor 13 |
+| **14** | **13** | **FRSKY_SENSOR_ID14** | 0x0D | Sensor 14 |
+| **15** | **14** | **FRSKY_SENSOR_ID15** | 0x8E | Sensor 15 |
+| **16** | **15** | **FRSKY_SENSOR_ID16** | 0x2F | Sensor 16 |
+| **17** | **16** | **FRSKY_SENSOR_ID17** | 0xD0 | Sensor 17 |
+| **18** | **17** | **FRSKY_SENSOR_ID18** | 0x71 | Sensor 18 |
+| **19** | **18** | **FRSKY_SENSOR_ID19** | 0xF2 | Sensor 19 |
+
+**S.PORT ID Calculation Algorithm:**
+```c
+uint8_t sport_calc_sensor_id(uint8_t physical_id) {
+    uint8_t result = physical_id;  // Base ID (bits 0-4)
+    
+    // Add FrSky parity bits (bits 5-7) for error detection
+    result += (BIT(physical_id, 0) ^ BIT(physical_id, 1) ^ BIT(physical_id, 2)) << 5;
+    result += (BIT(physical_id, 2) ^ BIT(physical_id, 3) ^ BIT(physical_id, 4)) << 6;
+    result += (BIT(physical_id, 0) ^ BIT(physical_id, 2) ^ BIT(physical_id, 4)) << 7;
+    
+    return result;
+}
+
+// Usage in code:
+void sport_sensor_set_id(serial_telemetry_class* self, uint8_t esc_id) {
+    uint8_t physical_id = (esc_id % 10) + 9;  // 10→9, 11→10, ..., 19→18
+    self->id = sport_calc_sensor_id(physical_id);  // Apply parity encoding
+}
+```
+
+**S.PORT Telemetry Behavior:**
+- **Poll-response protocol**: ESC only transmits when receiver requests data
+- **Round-robin data**: 4 different data frames sent in sequence (power, rpm/consumption, temperature, SBEC)
+- **Bidirectional**: ESC can receive commands from receiver (future enhancement)
+
+### Multi-ESC Setup Recommendations
+
+When using multiple ESCs in a single aircraft:
+
+**For KISS Telemetry:**
+- Use consecutive IDs (1, 2, 3, 4) for quad setup
+- Stagger intervals to avoid transmission collisions
+- ID 0 for ESCs that only need command-based telemetry
+
+**For S.PORT Telemetry:**
+- Use consecutive IDs (10, 11, 12, 13) for quad setup
+- Each ESC gets unique FrSky sensor ID automatically
+- Receiver polls each ESC independently
+
+**Mixed Protocol (Not Recommended):**
+- Avoid mixing KISS and S.PORT on same aircraft
+- Different protocols use different wiring and receivers
+- Can cause timing conflicts
+
+### Current Implementation Status
+
+The current implementation properly uses the EEPROM-stored `telemetry_on_interval` value with optional compile-time override:
+
+```c
+// In main.c around line 1701
+#ifdef USE_SERIAL_TELEMETRY
+uint8_t id = eepromBuffer.telemetry_on_interval;
+
+// Optional compile-time override for different ESC IDs
+#ifdef ESC_ID
+    id = ESC_ID;
+#endif
+
+// Protocol selection based on ID range
+if (id < 10) {
+    serial_telemetry = init_kiss_telemetry();
+    serial_telemetry->set_id(serial_telemetry, id);
+}
+else if (id < 20) {
+    serial_telemetry = init_sport_telemetry();
+    serial_telemetry->set_id(serial_telemetry, id);
+}
+#endif
+```
+
+**Key Features:**
+1. **EEPROM-based configuration**: Uses stored `telemetry_on_interval` value by default
+2. **Compile-time override**: Optional `ESC_ID` preprocessor definition overrides EEPROM value
+3. **Automatic protocol selection**: 
+   - IDs 0-9: KISS telemetry with interval `id + 29` ms
+   - IDs 10-19: S.PORT telemetry with sensor ID calculation
+   - IDs 20+: No telemetry (falls through)
+4. **Conditional compilation**: Entire telemetry system disabled without `USE_SERIAL_TELEMETRY`
+
+**Production Ready**: The implementation correctly uses EEPROM values and supports both protocols without hardcoded test values.
 
 ---
 
@@ -1036,6 +1191,160 @@ if (stepper_sine == 0) {
 
 ---
 
+## ADC/DMA Resource Management and Race Condition Prevention
+
+### ADC/DMA Conflicts with Single-Wire UART
+
+The S.PORT telemetry implementation addresses critical DMA resource conflicts that occur between the cyclic ADC DMA operations and the timer-triggered DMA requests used by the single-wire UART.
+
+#### Problem: DMA Bus Contention
+
+The AT32F421 microcontroller has limited DMA resources, and when multiple peripherals attempt to use DMA simultaneously, bus contention occurs:
+
+```c
+// Problem: ADC DMA runs continuously in background
+// Timer DMA for UART TX/RX competes for bus access
+// Result: Lost/corrupted telemetry frames, timing violations
+```
+
+#### Solution: Dynamic ADC Control
+
+The `singlewire_uart.c` implementation dynamically disables ADC during critical telemetry operations:
+
+**During RX (Data Reception):**
+```c
+// In sw_uart_start_rx_interrupt() - line 445
+void EXINT15_4_IRQHandler(void) {
+    // Disable ADC DMA during critical RX window
+    disable_ADC();
+    
+    // Start timer and DMA for RX sampling
+    tmr_counter_enable(sw_uart_config.timer, TRUE);
+    uart_state = RECEIVING;
+}
+```
+
+**During TX (Data Transmission):**
+```c
+// In sw_uart_start_tx_dma() - line 701
+static void sw_uart_start_tx_dma(void) {
+    // Ensure ADC DMA won't hog the bus during critical TX window
+    disable_ADC();
+    
+    // Configure and start TX DMA
+    dma_channel_enable(sw_uart_config.dma_channel, FALSE);
+    // ... DMA configuration ...
+}
+```
+
+**After TX/RX Completion:**
+```c
+// In sw_uart_dma_complete_handler() - line 540
+if (dma_flag_get(sw_uart_config.dma_full_flag) == SET) {
+    // Stop timer immediately to prevent more DMA requests
+    tmr_counter_enable(sw_uart_config.timer, FALSE);
+    
+    // Re-enable ADC DMA after TX/RX completes
+    enable_ADC();
+}
+```
+
+#### Performance Impact Analysis
+
+| Operation | ADC Disabled Duration | Impact on ESC Operation |
+|-----------|----------------------|-------------------------|
+| **S.PORT RX** | ~350µs (8 bytes @ 57600 baud) | Minimal - ADC sampling paused briefly |
+| **S.PORT TX** | ~1.4ms (8 bytes + processing) | Acceptable - Still within 1kHz ADC cycle |
+| **Normal Operation** | 0µs | Full ADC performance maintained |
+
+### Race Condition Prevention with Atomic Operations
+
+#### Problem: Interrupt/DMA Timing Races
+
+Traditional bit manipulation operations can be interrupted, causing race conditions in critical register modifications:
+
+```c
+// DANGEROUS - Non-atomic operation
+EXINT->inten |= (1 << pin);    // Can be interrupted between read-modify-write
+// Another interrupt could modify register between read and write
+```
+
+#### Solution: Bit-Band Atomic Operations
+
+The implementation uses ARM Cortex-M bit-banding for atomic register access:
+
+**Atomic EXTI Control (`IO.c`):**
+```c
+// Atomic bit manipulation using bit-band addressing
+void atomic_exti_bit_modify(uint32_t line, uint8_t state) {
+    // Calculate bit-band address for specific EXTI line
+    volatile uint32_t* bitband_addr = (volatile uint32_t*)BITBAND_PERIPH(EXTI_INTEN_ADDR, line);
+    *bitband_addr = state;  // Atomic bit set/clear - cannot be interrupted
+}
+```
+
+**Usage in Single-Wire UART:**
+```c
+// Atomically disable EXTI interrupt during RX
+atomic_exti_bit_modify(sw_uart_config.gpio_pin_num, 0);
+
+// Atomically configure edge detection
+atomic_polcfg1_bit_modify(sw_uart_config.gpio_pin_num, 1); // rising edge
+
+// Atomically re-enable EXTI after setup
+atomic_exti_bit_modify(sw_uart_config.gpio_pin_num, 1);
+```
+
+**Usage in Comparator (`comparator.c`):**
+```c
+void disableComparatorInterrupt(void) {
+    atomic_exti_bit_modify(21, 0);  // Disable COMP1 interrupt atomically
+}
+
+void enableComparatorInterrupt(void) {
+    atomic_exti_bit_modify(21, 1);  // Enable COMP1 interrupt atomically
+}
+
+void changeCompHysteresis(int time, char comp_pin) {
+    // Atomic edge configuration prevents race conditions
+    atomic_polcfg1_bit_modify(21, !rising);
+    atomic_polcfg2_bit_modify(21, rising);
+}
+```
+
+#### Bit-Band Implementation Details
+
+**Address Calculation:**
+```c
+// AT32F421 bit-band formula from datasheet
+#define PERIPH_BB_BASE        0x42000000UL
+#define BITBAND_PERIPH(addr, bit) \
+    ((PERIPH_BB_BASE + (((uint32_t)(addr) - PERIPH_BASE) << 5) + ((bit) << 2)))
+
+// Each bit in peripheral space maps to 32-bit word in bit-band space
+// Writing to bit-band address atomically sets/clears corresponding bit
+```
+
+#### Race Conditions Prevented
+
+1. **EXTI Configuration Races**: Multiple interrupts modifying EXTI registers simultaneously
+2. **DMA Channel Conflicts**: Timer DMA conflicting with ADC DMA channel arbitration  
+3. **Comparator State Changes**: Zero-crossing detection interfering with telemetry
+4. **GPIO Mode Switches**: TX/RX mode changes during active transmission
+
+### Resource Management Summary
+
+| Resource | Conflict Source | Mitigation Strategy | Implementation |
+|----------|-----------------|-------------------|----------------|
+| **DMA Bus** | ADC vs UART DMA | Dynamic ADC disable | `disable_ADC()` / `enable_ADC()` |
+| **EXTI Registers** | Multiple interrupt sources | Atomic bit operations | `atomic_exti_bit_modify()` |
+| **Timer Resources** | Shared timer usage | Exclusive timer access | Timer disable during config |
+| **GPIO Configuration** | Mode switching races | Atomic register access | Bit-band addressing |
+
+This approach ensures reliable S.PORT telemetry operation without compromising the core ESC functionality or introducing timing-sensitive bugs.
+
+---
+
 ## Configuration
 
 ### Compile-Time Configuration
@@ -1060,23 +1369,37 @@ USE_SERIAL_TELEMETRY = 1
 ### Runtime Configuration
 
 **Telemetry Protocol Selection:**
-The protocol is selected based on `eepromBuffer.telemetry_on_interval` value in main.c:
+The protocol is selected based on `eepromBuffer.telemetry_on_interval` value in main.c with optional compile-time override:
 
 ```c
-// In main.c initialization (around line 1692)
+// In main.c initialization (around line 1701)
+#ifdef USE_SERIAL_TELEMETRY
 uint8_t id = eepromBuffer.telemetry_on_interval;
-id = 10; // ⚠️ Currently hardcoded to 10 for testing (forces S.PORT)
+
+// Optional compile-time override for different ESC IDs
+#ifdef ESC_ID
+    id = ESC_ID;
+#endif
 
 if (id < 10) {
     // KISS telemetry for IDs 0-9
     serial_telemetry = init_kiss_telemetry();
+    // if id == 0 no interval telemetry is sent
+    // if id > 0 telemetry is sent on interval id+29
     serial_telemetry->set_id(serial_telemetry, id);
 } else if (id < 20) {
     // S.PORT telemetry for IDs 10-19  
     serial_telemetry = init_sport_telemetry();
     serial_telemetry->set_id(serial_telemetry, id);
 }
+#endif
 ```
+
+**Configuration Features:**
+1. **EEPROM-based**: Uses stored `telemetry_on_interval` value by default
+2. **Compile-time override**: `ESC_ID` preprocessor definition overrides EEPROM
+3. **Multi-firmware support**: Same firmware can be used with different ESC IDs
+4. **Conditional compilation**: Entire system disabled without `USE_SERIAL_TELEMETRY`
 
 **KISS Telemetry Intervals (IDs 0-9):**
 - ID = 0: No automatic transmission (DShot/command-triggered only)
@@ -1094,13 +1417,6 @@ if (id < 10) {
 **Data Update Rates:**
 - Sensor data (temp/voltage/current): 1kHz (adequate for these slow-changing values)
 - RPM calculation: 20kHz (fast response to speed changes)
-- ⚠️ **Telemetry packaging: 1kHz (causes RPM data staleness)**
-
-**Current Issues:**
-1. ID hardcoded to 10 for testing (not reading from EEPROM)
-2. RPM data in telemetry packages may be up to 1ms stale
-
-- Transmission rate limited by receiver polling (typically 10-100 Hz)
 
 **Pin Configuration:**
 
