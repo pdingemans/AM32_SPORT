@@ -9,16 +9,21 @@
 #include "targets.h"
 #include "common.h"
 
+#include "IO.h"
+
 uint8_t getCompOutputLevel() { return CMP->ctrlsts_bit.cmpvalue; }
 
 void maskPhaseInterrupts()
 {
-    EXINT->inten &= ~EXTI_LINE;
+    atomic_exti_bit_modify(21, 0);
+    //EXINT->inten &= ~EXTI_LINE;
     EXINT->intsts = EXTI_LINE;
 }
 
-void enableCompInterrupts() { EXINT->inten |= EXTI_LINE; }
-
+void enableCompInterrupts() 
+{ 
+    atomic_exti_bit_modify(21, 1  ); 
+}
 void changeCompInput()
 {
 //    if (step == 1 || step == 4) { // c floating
@@ -47,6 +52,8 @@ void changeCompInput()
         //set comp to medium speed mode
         CMP->ctrlsts  = CMP->ctrlsts | 1<<2;
     }
-	EXINT->polcfg1 = !rising << 21;
-    EXINT->polcfg2 = rising << 21;
+    atomic_polcfg1_bit_modify(21, !rising);
+    atomic_polcfg2_bit_modify(21, rising);
+	//EXINT->polcfg1 = !rising << 21;
+    //EXINT->polcfg2 = rising << 21;
 }
