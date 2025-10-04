@@ -1699,7 +1699,13 @@ int main(void)
 
 #ifdef USE_SERIAL_TELEMETRY
     uint8_t id = eepromBuffer.telemetry_on_interval;
-    id = 10; // for the test needs to be removed!!!
+    // this can be overridden by defining ESC_ID in the project settings
+    // if not defined the value from eeprom is used
+    // this will allow flashing the same firmware to different ESC ID's
+    // but then the configtool needs to be changed. which is not the case for now
+#ifdef ESC_ID
+    id = ESC_ID;
+#endif
     if (id<10)
     {
         serial_telemetry = init_kiss_telemetry();
