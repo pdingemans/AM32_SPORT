@@ -185,19 +185,20 @@ void sportmakeTelemPackage(serial_telemetry_class *self, uint8_t temp, uint16_t 
 #define BIT(x, index) (((x) >> index) & 0x01)
 uint8_t sport_calc_sensor_id(uint8_t physical_id)
 {
-    uint8_t result = physical_id;
+    volatile uint8_t result = physical_id;
     result += (BIT(physical_id, 0) ^ BIT(physical_id, 1) ^ BIT(physical_id, 2)) << 5;
     result += (BIT(physical_id, 2) ^ BIT(physical_id, 3) ^ BIT(physical_id, 4)) << 6;
     result += (BIT(physical_id, 0) ^ BIT(physical_id, 2) ^ BIT(physical_id, 4)) << 7;
     return result;
 }
 
-void sport_sensor_set_id(serial_telemetry_class *self, uint8_t instance)
+
+void sport_sensor_set_id(serial_telemetry_class *self, uint8_t id)
 {
-    instance %= 10; // wrap around 10.
-    instance += 9;  // we start off with ID 10 as default
-    self->id = sport_calc_sensor_id(instance);
+
+    esc_sensor.sensor_id = sport_calc_sensor_id(id-1);
 }
+
 
 serial_telemetry_class sport_telemetry = {
     .id = 0,
@@ -205,7 +206,6 @@ serial_telemetry_class sport_telemetry = {
     .handle_esc_telemetry = sport_telemetry_handle_poll,
     .makeTelemPackage = sportmakeTelemPackage,
 };
-
 serial_telemetry_class *init_sport_telemetry(void)
 {
     // here we initialize also the singlewire_uart

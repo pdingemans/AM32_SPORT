@@ -174,11 +174,11 @@ int16_t getConvertedDegrees(uint16_t adcrawtemp)
 
         last_millis = millis();
         int64_t temp =  ((int64_t)12800 - (((int64_t)adcrawtemp * (int64_t)33000) / (int64_t)4096)) / (int64_t)-42 + 25;
-        temp *= 100; // we do everything in factor 100 to have more precision for the filter
-        filtered_temp = filtered_temp  +(temp-filtered_temp)/100;   // very simple exponential low pass filter
+        temp <<=7; // we do everything in factor 128 to have more precision for the filter
+        filtered_temp = filtered_temp  +((temp-filtered_temp)>>7);   // very simple exponential low pass filter
 
     }
-    return filtered_temp/100;
+    return filtered_temp>>7; // divide by 128 to get back to normal value
 #endif
 }
 #endif // USE_ADC

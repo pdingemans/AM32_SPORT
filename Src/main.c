@@ -781,6 +781,13 @@ void saveEEpromSettings()
     save_flash_nolib(eepromBuffer.buffer, sizeof(eepromBuffer.buffer), eeprom_address);
 }
 
+int filter(int *filterstate, int input, int alpha) {
+
+	if (input < 0) return 0; // only positive allowed
+	if ((*filterstate) < 0) *filterstate = input << alpha; // Initialize state, we start off with filterstate -1.
+	return (*filterstate = input + *filterstate - (*filterstate >> alpha)) >> alpha;
+}
+
 uint16_t getSmoothedCurrent()
 {
     total = total - readings[readIndex];
@@ -1692,7 +1699,17 @@ int main(void)
     checkDeviceInfo();
     initCorePeripherals();
     enableCorePeripherals();
-       // added initialisation of telemetry
+ 
+    loadEEpromSettings();
+
+    if (VERSION_MAJOR != eepromBuffer.version.major || VERSION_MINOR != eepromBuffer.version.minor || EEPROM_VERSION > eepromBuffer.eeprom_version) {
+        eepromBuffer.version.major = VERSION_MAJOR;
+        eepromBuffer.version.minor = VERSION_MINOR;
+        eepromBuffer.eeprom_version = EEPROM_VERSION;
+        saveEEpromSettings();
+    }
+    
+      // added initialisation of telemetry
     // id ranging from 0-9 are KISS ESC's
     // id between from 10-19 are sport ESC's
     // sport ESC ID will be id minus 1, so ID 10 will be SPORT ID10, (which is 9 :))
@@ -1719,15 +1736,8 @@ int main(void)
         serial_telemetry->set_id(serial_telemetry,id);
     }
 #endif
-    loadEEpromSettings();
 
-    if (VERSION_MAJOR != eepromBuffer.version.major || VERSION_MINOR != eepromBuffer.version.minor || EEPROM_VERSION > eepromBuffer.eeprom_version) {
-        eepromBuffer.version.major = VERSION_MAJOR;
-        eepromBuffer.version.minor = VERSION_MINOR;
-        eepromBuffer.eeprom_version = EEPROM_VERSION;
-        saveEEpromSettings();
-    }
-    
+
     if (eepromBuffer.dir_reversed == 1) {
         forward = 0;
     } else {
