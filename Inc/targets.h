@@ -724,7 +724,6 @@
 #define HARDWARE_GROUP_AT_B
 #define HARDWARE_GROUP_AT_045
 #define USE_SERIAL_TELEMETRY
-#define ESC_ID 10
 #endif
 
 #ifdef NEUTRON_4IN1_F421

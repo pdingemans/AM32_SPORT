@@ -80,6 +80,9 @@ extern void interruptRoutine();
 extern void tenKhzRoutine();
 extern void processDshot();
 
+#ifdef USE_SERIAL_TELEMETRY
+extern serial_telemetry_class* serial_telemetry;
+#endif
 extern char send_telemetry;
 uint16_t interrupt_time = 0;
 extern char servoPwm;
@@ -145,19 +148,14 @@ void PendSV_Handler(void)
 
     /* USER CODE END PendSV_IRQn 1 */
 }
-
+// Millisecond counter for system timing
+extern volatile uint32_t system_millis;
 /**
  * @brief This function handles System tick timer.
  */
 void SysTick_Handler(void)
 {
-    /* USER CODE BEGIN SysTick_IRQn 0 */
-
-    /* USER CODE END SysTick_IRQn 0 */
-
-    /* USER CODE BEGIN SysTick_IRQn 1 */
-
-    /* USER CODE END SysTick_IRQn 1 */
+   system_millis++;
 }
 
 /******************************************************************************/
@@ -218,6 +216,11 @@ void DMA1_Channel2_3_IRQHandler(void)
     }
 
     if (LL_DMA_IsActiveFlag_TC3(DMA1)) {
+
+        if(serial_telemetry->handle_TX_DMA_complete) {
+            serial_telemetry->handle_TX_DMA_complete(serial_telemetry);
+        }
+
         send_telemetry = 0;
         LL_DMA_ClearFlag_GI3(DMA1);
         LL_DMA_DisableChannel(DMA1, LL_DMA_CHANNEL_3);

@@ -9,8 +9,8 @@
 #include "targets.h"
 
 
-// very ugly solution: lets have a global system_millis that we use
-extern volatile uint32_t system_millis;
+
+volatile uint32_t system_millis;
 uint32_t millis()
 {
     return system_millis;
@@ -27,6 +27,7 @@ uint32_t millis()
 //     return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 // }
 
+//         return map(x, in_mid
 uint16_t map(uint16_t x, uint16_t in_min, uint16_t in_max, uint16_t out_min, uint16_t out_max)
 // {
 //     if (x >= in_max)
@@ -43,8 +44,7 @@ uint16_t map(uint16_t x, uint16_t in_min, uint16_t in_max, uint16_t out_min, uin
 //         return out_mid;
 //     if (x <= in_mid)
 //         return map(x, in_min, in_mid, out_min, out_mid);
-//     else
-//         return map(x, in_mid + 1, in_max, out_mid, out_max);
+//     else + 1, in_max, out_mid, out_max);
 // }
 
 {

@@ -114,6 +114,7 @@ serial_telemetry_class kiss_telemetry = {
     .set_id = set_kiss_telemetry_id,
     .handle_esc_telemetry = handle_kiss_esc_telemetry,
     .makeTelemPackage = makeTelemPackage,
+    .handle_TX_DMA_complete = NULL
 };
 
 serial_telemetry_class *init_kiss_telemetry()

@@ -9,7 +9,7 @@
 #include "eeprom.h"
 #include <stdlib.h>
 #include <stdio.h>
-
+#include "functions.h"
 
 
 uint8_t sport_calc_sensor_id(uint8_t physical_id);
@@ -147,18 +147,32 @@ static int sportresp(const FrSkySportTelemetryType *data)
 void sport_telemetry_handle_poll(serial_telemetry_class *self)
 {
 
+    uint8_t data;
+  
+    //     // testing stuff
+    //     static uint32_t oldmillis=0;
+    //     static uint8_t senddata=0;
+    //     if( millis() - oldmillis > 1000){
+//         oldmillis=millis();
+//         senddata++;
+//         singlewire_uart_send_frame(&senddata,1);
+//     }   
+//     // end test stuff
+
     static uint8_t previous_char = 0;
 
-    uint8_t data;
     while (singlewire_uart_read_byte(&data))
     {
+      
+        
         uint8_t polled_id = FRSKY_SENSOR_ID_IGNORE;
         if (previous_char == FRSKY_TELEMETRY_START_FRAME)
         {
             polled_id = data;
         }
         previous_char = data;
-
+   
+        
         if (polled_id == esc_sensor.sensor_id)
         {
 
@@ -205,6 +219,7 @@ serial_telemetry_class sport_telemetry = {
     .set_id = sport_sensor_set_id,
     .handle_esc_telemetry = sport_telemetry_handle_poll,
     .makeTelemPackage = sportmakeTelemPackage,
+    .handle_TX_DMA_complete = sw_uart_dma_complete_handler
 };
 serial_telemetry_class *init_sport_telemetry(void)
 {

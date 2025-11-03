@@ -98,4 +98,6 @@ typedef struct serial_telemetry_class {
     void (*set_id)(struct serial_telemetry_class* self, uint8_t new_id);
     void (*handle_esc_telemetry)(struct serial_telemetry_class* self);
     void (*makeTelemPackage)(struct serial_telemetry_class* self, uint8_t temp, uint16_t voltage, uint16_t current, uint16_t consumption, uint16_t e_rpm);
- } serial_telemetry_class;
+    void (*handle_TX_DMA_complete)(struct serial_telemetry_class* self);    
+} serial_telemetry_class;
+

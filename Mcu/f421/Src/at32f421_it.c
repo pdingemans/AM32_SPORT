@@ -18,7 +18,7 @@
 
 
 // Millisecond counter for system timing
-volatile uint32_t system_millis = 0;
+extern volatile uint32_t system_millis;
 
 
 #include "singlewire_uart.h"

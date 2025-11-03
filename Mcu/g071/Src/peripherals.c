@@ -49,7 +49,12 @@ void initCorePeripherals(void)
 #ifdef USE_LED_STRIP
     WS2812_Init();
 #endif
+
+    // Initialize SysTick for 1ms interrupt
+    SysTick_Config(SystemCoreClock / 1000);
+
 }
+
 
 void initAfterJump()
 {
